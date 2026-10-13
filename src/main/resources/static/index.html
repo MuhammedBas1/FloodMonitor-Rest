@@ -138,7 +138,12 @@
         };
     }
     function parseStationNode(n) {
-        return { id: childText(n, 'id'), name: childText(n, 'name'), river: childText(n, 'river') };
+        return {
+            id: childText(n, 'id'),
+            name: childText(n, 'name'),
+            river: childText(n, 'river'),
+            isActive: childText(n, 'isActive') === 'true'
+        };
     }
     function normalizeStations(raw) {
         if (isXml()) {
@@ -165,10 +170,16 @@
     /* ---------- Daten laden ---------- */
     function loadStations() {
         apiGet('/stations', (raw) => {
-            const stations = normalizeStations(raw);
+            let stations = normalizeStations(raw);
+            // Nach ID sortieren (numerisch, damit ST-001 vor ST-010 kommt)
+            stations.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+
             const current = $('#stationSelect').val();
             const select = $('#stationSelect').empty();
-            stations.forEach(s => select.append(`<option value="${s.id}">${s.id} – ${s.name} (${s.river})</option>`));
+            stations.forEach(s => {
+                const suffix = s.isActive ? '' : ' (inaktiv)';
+                select.append(`<option value="${s.id}">${s.id} – ${s.name} (${s.river})${suffix}</option>`);
+            });
             if (current && stations.some(s => s.id === current)) select.val(current);
             loadLatest();
             loadHistory();

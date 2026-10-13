@@ -44,7 +44,9 @@ public class StationRepository {
     }
 
     public List<Station> findAll() {
-        return new ArrayList<>(stations.values());
+        List<Station> list = new ArrayList<>(stations.values());
+        list.sort(Comparator.comparing(Station::getId));
+        return list;
     }
 
     public Optional<Station> findById(String id) {
