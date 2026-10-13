@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hochwasser-Frühwarnsystem</title>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f8f9fa; }
+        h1, h2 { color: #212529; }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+        .controls label { display: flex; gap: 5px; align-items: center; font-size: 14px; }
+        .controls input, .controls select, .controls button { padding: 6px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 10px; background: #fff; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 14px; }
+        th { background-color: #343a40; color: #fff; }
+        .badge { padding: 3px 8px; border-radius: 4px; font-weight: bold; color: #fff; }
+        .NORMAL   { background-color: #28a745; }  /* grün  */
+        .WARNING  { background-color: #fd7e14; }  /* orange */
+        .CRITICAL { background-color: #dc3545; }  /* rot   */
+        .UNKNOWN  { background-color: #6c757d; }  /* grau  */
+        .banner { padding: 10px; border-radius: 4px; margin: 10px 0; }
+        .banner.error { background: #f8d7da; color: #721c24; }
+        .banner.info  { background: #d1ecf1; color: #0c5460; }
+        .hidden { display: none; }
+        .card { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 12px; margin: 10px 0; }
+        #loading { color: #0c5460; font-style: italic; }
+    </style>
+</head>
+<body>
+<h1>Hochwasser-Frühwarnsystem</h1>
+
+<div id="banner" class="banner hidden"></div>
+
+<div class="controls">
+    <label>Station: <select id="stationSelect"></select></label>
+    <label>Format:
+        <select id="formatSelect">
+            <option value="json">JSON</option>
+            <option value="xml">XML</option>
+        </select>
+    </label>
+    <label>Von: <input type="datetime-local" id="fromInput"></label>
+    <label>Bis: <input type="datetime-local" id="toInput"></label>
+    <label>Warnstufe:
+        <select id="warningSelect">
+            <option value="">Alle</option>
+            <option value="NORMAL">NORMAL</option>
+            <option value="WARNING">WARNING</option>
+            <option value="CRITICAL">CRITICAL</option>
+            <option value="UNKNOWN">UNKNOWN</option>
+        </select>
+    </label>
+    <label>Limit: <input type="number" id="limitInput" value="20" min="1" max="1000"></label>
+    <button id="refreshBtn">Aktualisieren</button>
+    <label><input type="checkbox" id="autoRefresh" checked> Auto-Refresh (10 s)</label>
+    <span id="lastUpdate"></span>
+</div>
+
+<h2>Aktueller Messwert</h2>
+<div id="latestCard" class="card">Noch keine Daten geladen.</div>
+
+<h2>Messwerte (Historie)</h2>
+<div id="loading" class="hidden">Lade Daten…</div>
+<table>
+    <thead>
+    <tr>
+        <th>Station</th><th>Zeitpunkt</th><th>Wasserstand (cm)</th><th>Durchfluss (m³/s)</th>
+        <th>Niederschlag (mm/h)</th><th>Akku (%)</th><th>Status</th><th>Warnstufe</th>
+    </tr>
+    </thead>
+    <tbody id="tableBody"></tbody>
+</table>
+
+<script>
+    const API = '/api/v1';
+    let refreshTimer = null;
+
+    if (typeof jQuery === 'undefined') {
+        document.body.insertAdjacentHTML('afterbegin',
+            '<p style="color:red;font-weight:bold">jQuery konnte nicht geladen werden (Internetverbindung/CDN prüfen).</p>');
+    }
+
+    function acceptMime() {
+        return $('#formatSelect').val() === 'xml' ? 'application/xml' : 'application/json';
+    }
+    function isXml() { return acceptMime() === 'application/xml'; }
+
+    function showBanner(type, text) {
+        $('#banner').removeClass('hidden error info').addClass(type).text(text).show();
+    }
+    function hideBanner() { $('#banner').addClass('hidden'); }
+    function showLoading(on) {
+        $('#loading').toggleClass('hidden', !on);
+        $('#refreshBtn').prop('disabled', on);
+    }
+
+    function handleError(xhr) {
+        let message = 'HTTP ' + xhr.status;
+        try {
+            const body = JSON.parse(xhr.responseText);
+            if (body.message) message += ': ' + body.message;
+        } catch (e) { /* Body nicht lesbar */ }
+        showBanner('error', 'Fehler beim Laden – ' + message);
+    }
+
+    function apiGet(path, onSuccess) {
+        $.ajax({
+            url: API + path,
+            method: 'GET',
+            headers: { 'Accept': acceptMime() },
+            dataType: 'text',               // XML bewusst als Roh-Text, Parsen erfolgt manuell
+            beforeSend: () => showLoading(true),
+            success: (raw) => { hideBanner(); onSuccess(raw); },
+            error: handleError,
+            complete: () => {
+                showLoading(false);
+                $('#lastUpdate').text('Stand: ' + new Date().toLocaleTimeString());
+            }
+        });
+    }
+
+    /* ---------- XML/JSON-Normalisierung ---------- */
+    function childText(node, tag) {
+        const el = node.getElementsByTagName(tag)[0];
+        return el ? el.textContent : '';
+    }
+    function parseMeasurementNode(n) {
+        return {
+            stationId: childText(n, 'stationId'),
+            timestamp: childText(n, 'timestamp'),
+            waterLevel: childText(n, 'waterLevel'),
+            flowRate: childText(n, 'flowRate'),
+            rainfall: childText(n, 'rainfall'),
+            batteryLevel: childText(n, 'batteryLevel'),
+            status: childText(n, 'status'),
+            warningLevel: childText(n, 'warningLevel')
+        };
+    }
+    function parseStationNode(n) {
+        return { id: childText(n, 'id'), name: childText(n, 'name'), river: childText(n, 'river') };
+    }
+    function normalizeStations(raw) {
+        if (isXml()) {
+            const doc = new DOMParser().parseFromString(raw, 'text/xml');
+            return Array.from(doc.getElementsByTagName('station')).map(parseStationNode);
+        }
+        return JSON.parse(raw).stations || [];
+    }
+    function normalizeMeasurements(raw) {
+        if (isXml()) {
+            const doc = new DOMParser().parseFromString(raw, 'text/xml');
+            return Array.from(doc.getElementsByTagName('measurement')).map(parseMeasurementNode);
+        }
+        return JSON.parse(raw).measurements || [];
+    }
+    function normalizeMeasurement(raw) {
+        if (isXml()) {
+            const doc = new DOMParser().parseFromString(raw, 'text/xml');
+            return parseMeasurementNode(doc.documentElement);
+        }
+        return JSON.parse(raw);
+    }
+
+    /* ---------- Daten laden ---------- */
+    function loadStations() {
+        apiGet('/stations', (raw) => {
+            const stations = normalizeStations(raw);
+            const current = $('#stationSelect').val();
+            const select = $('#stationSelect').empty();
+            stations.forEach(s => select.append(`<option value="${s.id}">${s.id} – ${s.name} (${s.river})</option>`));
+            if (current && stations.some(s => s.id === current)) select.val(current);
+            loadLatest();
+            loadHistory();
+        });
+    }
+
+    function loadLatest() {
+        const stationId = $('#stationSelect').val();
+        if (!stationId) return;
+        apiGet(`/stations/${stationId}/measurements/latest`, (raw) => {
+            const m = normalizeMeasurement(raw);
+            $('#latestCard').html(
+                `<strong>${m.stationId}</strong> | ${m.timestamp} | Wasserstand: <strong>${m.waterLevel} cm</strong> | ` +
+                `Durchfluss: ${m.flowRate} m³/s | Niederschlag: ${m.rainfall} mm/h | Akku: ${m.batteryLevel} % | ` +
+                `Status: ${m.status} | Warnstufe: <span class="badge ${m.warningLevel}">${m.warningLevel}</span>`
+            );
+        });
+    }
+
+    function loadHistory() {
+        const stationId = $('#stationSelect').val();
+        if (!stationId) return;
+
+        let path = `/stations/${stationId}/measurements?limit=${$('#limitInput').val() || 20}`;
+        if ($('#fromInput').val()) path += '&from=' + $('#fromInput').val();
+        if ($('#toInput').val()) path += '&to=' + $('#toInput').val();
+        if ($('#warningSelect').val()) path += '&warningLevel=' + $('#warningSelect').val();
+
+        apiGet(path, (raw) => {
+            const rows = normalizeMeasurements(raw);
+            const tbody = $('#tableBody').empty();
+            if (rows.length === 0) {
+                tbody.append('<tr><td colspan="8">Keine Messwerte für die gewählten Filter vorhanden.</td></tr>');
+                return;
+            }
+            rows.forEach(m => {
+                tbody.append(
+                    `<tr>
+                        <td>${m.stationId}</td>
+                        <td>${m.timestamp}</td>
+                        <td>${m.waterLevel}</td>
+                        <td>${m.flowRate}</td>
+                        <td>${m.rainfall}</td>
+                        <td>${m.batteryLevel}</td>
+                        <td>${m.status}</td>
+                        <td><span class="badge ${m.warningLevel}">${m.warningLevel}</span></td>
+                    </tr>`
+                );
+            });
+        });
+    }
+
+    function refreshAll() { loadStations(); }
+
+    /* ---------- Events ---------- */
+    $(document).ready(function () {
+        refreshAll();
+
+        $('#refreshBtn').on('click', refreshAll);
+        $('#stationSelect').on('change', () => { loadLatest(); loadHistory(); });
+        $('#fromInput, #toInput, #warningSelect, #limitInput').on('change', loadHistory);
+        $('#formatSelect').on('change', refreshAll);
+
+        function startAutoRefresh() {
+            stopAutoRefresh();
+            refreshTimer = setInterval(refreshAll, 10000);
+        }
+        function stopAutoRefresh() {
+            if (refreshTimer) clearInterval(refreshTimer);
+            refreshTimer = null;
+        }
+        $('#autoRefresh').on('change', function () {
+            this.checked ? startAutoRefresh() : stopAutoRefresh();
+        });
+        startAutoRefresh();
+    });
+</script>
+</body>
+</html>
