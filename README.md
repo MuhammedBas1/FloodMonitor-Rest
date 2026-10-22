@@ -1,78 +1,68 @@
-# Flood Monitor REST API – Starter Project
+# DEZSYS_GK71_FLOODMONITOR_REST
 
-## Learning Objectives
+Hochwasser-Frühwarnsystem mit REST-Schnittstelle (JSON/XML), Simulation und Webclient.
 
-In this exercise you will learn how to:
+## Startanleitung
+Voraussetzungen: JDK 21, Gradle Wrapper
+- Starten: `./gradlew bootRun` → http://localhost:8080
+- Tests:   `./gradlew test`
+- Swagger UI: http://localhost:8080/swagger-ui.html
+- Konfiguration: `src/main/resources/application.properties` (simulation.interval, simulation.enabled)
 
-1. Set up a basic **Spring Boot** REST application using **Gradle**.
-2. Create a **model class** (POJO) and understand JSON serialization.
-3. Build a **REST controller** and expose a `GET` endpoint.
-4. Test your REST API using a browser or a tool like **Postman** or **curl**.
+## Architektur
+Model (Datenklassen/Enums) → Repository (In-Memory) → Service (Simulation, Warnstufe, Statistik)
+→ Controller (HTTP) → Exception Handling (@RestControllerAdvice) → Client (static/index.html)
+Controller enthalten keine Geschäftslogik.
 
----
+## Datenmodell
+Station: id, name, river, location (lat/lon), normalWaterLevel, warningWaterLevel, criticalWaterLevel, isActive
+Measurement: id, stationId, timestamp (ISO-8601), waterLevel, flowRate, rainfall, temperature, batteryLevel, status, warningLevel
+Enums: WarningLevel (NORMAL/WARNING/CRITICAL/UNKNOWN), StationStatus (ONLINE/MAINTENANCE/OFFLINE)
 
-## Project Structure
+## Simulationsregeln (Doku)
+- Nur aktive Stationen erzeugen Messwerte; OFFLINE/MAINTENANCE-Ausfall → keine neuen Werte.
+- Wasserstand basiert auf dem Vormesswert (Drift ±) und steigt tendenziell mit Niederschlag.
+- Wasserstand nie negativ; Akku 0–100 %; Durchfluss korreliert mit Wasserstand.
+- Akku < 10 % → Status MAINTENANCE.
+- Warnstufe serverseitig: < warningWaterLevel = NORMAL; ≥ warningWaterLevel = WARNING; ≥ criticalWaterLevel = CRITICAL; keine Messung = UNKNOWN.
 
-```
-src/main/java/com/example/floodmonitor/
-├── FloodMonitorApplication.java   ← Entry point
-├── model/
-│   └── Station.java               ← Data model (POJO)
-└── controller/
-    └── StationController.java     ← REST controller
-```
+## Endpunkte
+| Methode | Pfad | Parameter |
+|---|---|---|
+| GET | /api/v1/stations | river, isActive, warningLevel |
+| GET | /api/v1/stations/{id} | – |
+| GET | /api/v1/stations/{id}/measurements/latest | – |
+| GET | /api/v1/stations/{id}/measurements | from, to, limit, warningLevel |
+| GET | /api/v1/alerts | warningLevel, river |
+| GET | /api/v1/statistics bzw. /api/v1/stations/{id}/statistics | – |
 
----
+Content Negotiation: `Accept: application/json` (Default) oder `Accept: application/xml`; anderes Format → 406.
 
-## Running the Application
+### Beispiele
+curl -H "Accept: application/xml" http://localhost:8080/api/v1/stations/ST-001/measurements/latest
+curl "http://localhost:8080/api/v1/stations/ST-001/measurements?from=2026-05-01T08:00:00&to=2026-05-01T12:00:00&limit=100"
 
-### Prerequisites
-- Java 17 or higher
-- No additional installation required (Gradle Wrapper included)
+## Fehlerbehandlung
+Zentral via @RestControllerAdvice; einheitliches ErrorResponse (timestamp, status, error, message, path),
+keine Stacktraces. 400 (ungültige Filter/Zeitraum/Limit), 404 (Station unbekannt), 406 (Format), 415, 500.
 
-### Start the application
-```bash
-./gradlew bootRun
-```
+## Tests
+`./gradlew test` – MockMvc-Tests: JSON/XML, existierende/unbekannte Station, Latest, Zeitraumfilter,
+ungültiger Zeitraum, Warnstufen NORMAL/WARNING/CRITICAL, 406, max. Limit. Simulation in Tests deaktiviert
+(`src/test/resources/application.properties`: simulation.enabled=false).
 
-The server starts on **http://localhost:8080**.
+## Webclient
+[Screenshot Tabelle einfügen] [Screenshot XML-Modus einfügen]
 
-### Test the endpoint
-Open your browser or use curl:
-```bash
-curl http://localhost:8080/api/v1/stations
-```
+## Reflexion
+- Testklasse lag anfangs in src/main/java → Compile-Fehler, da test-Dependencies fehlen; nach src/test/java verschoben.
+- @EnableScheduling fehlte → Simulation lief nicht, leere Tabellen im Client.
+- 406-Fehlerbody muss direkt geschrieben werden, da Message-Converter den Accept-Header ablehnen.
+- jQuery parst XML-Antworten automatisch vor → dataType:'text' + manueller DOMParser.
 
-Expected response (JSON array of stations):
-```json
-[
-  {
-    "id": "1",
-    "stationName": "Station Vienna",
-    "timestamp": "2024-01-15T10:00:00",
-    "waterLevel": 2.35,
-    "waterTemperature": 8.5,
-    "unit": "m"
-  },
-  ...
-]
-```
-
----
-
-## Next Tasks
-
-### Tasks 1
-- [ ] Run the application and verify the `/api/v1/stations` endpoint works.
-- [ ] Add a new field `waterFlow` (double) to the `Station` model. Verify the new field appears in the JSON response.
-- [ ] Add a new endpoint `GET /api/v1/stations/{id}` that returns a single station by its ID.
-
-### Tasks 2
-- [ ] Add a `GET /api/v1/stations/count` endpoint that returns the number of stations as a plain integer.
-- [ ] Return an appropriate HTTP status code (`404 Not Found`) when a station with the given ID does not exist.
-- [ ] Add a `POST /api/v1/stations` endpoint that accepts a JSON body and adds a new station to the (in-memory) list.
-
-### Tasks 3
-- [ ] Add XML support: return XML instead of JSON when the client sends `Accept: application/xml`.
-- [ ] Integrate **Springdoc OpenAPI** (Swagger UI) to document your API.
-
+## AI-Prompt-Dokumentation (Pflicht laut Angabe)
+| Datum | Prompt (Kurzform) | Ergebnis/Übernahme |
+|---|---|---|
+| 13.10.2026 | "Setze die Angabe vollständig um" | Architektur-, Code-Vorschläge übernommen & angepasst |
+| 13.10.2026 | "Erstelle Repository/Exception/Service-Klassen" | Code übernommen, Optional-Fix selbst eingespielt |
+| ... | ... | ... |
